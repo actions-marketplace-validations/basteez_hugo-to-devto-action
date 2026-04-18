@@ -1,0 +1,73 @@
+name: Hugo → dev.to Crosspost
+description: >-
+  Mirror new Hugo posts touched in a push range to dev.to as drafts. Detects
+  eligible posts via git diff, parses Hugo frontmatter, and creates dev.to
+  drafts for posts that have draft=false and do not already exist on dev.to
+  (dedup by title).
+author: Tiziano Basile
+
+branding:
+  icon: upload-cloud
+  color: purple
+
+inputs:
+  devto-api-key:
+    description: >-
+      dev.to Personal API Key. Provide via a repository secret, e.g.
+      `${{ secrets.DEVTO_API_KEY }}`. The action fails with a non-zero exit
+      status when this input is empty or missing.
+    required: true
+
+  before:
+    description: >-
+      "Before" SHA of the push range. Typically `${{ github.event.before }}`.
+      Must be reachable in the checked-out repository (use
+      `actions/checkout@v4` with `fetch-depth: 0`).
+    required: true
+
+  after:
+    description: >-
+      "After" SHA of the push range. Typically `${{ github.event.after }}`.
+    required: true
+
+  post-dir:
+    description: >-
+      Directory (relative to the consumer repo root) that contains Hugo posts.
+      Only files touched inside this directory between `before` and `after`
+      are considered.
+    required: false
+    default: content/post
+
+  dry-run:
+    description: >-
+      When set to the literal string `'true'`, the action simulates crossposting
+      (no POST /articles call to dev.to) and logs what would happen. Any other
+      value leaves dry-run off.
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install crosspost dependencies
+      shell: bash
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install --require-hashes -r "${{ github.action_path }}/crosspost/requirements.lock"
+
+    - name: Run crosspost
+      shell: bash
+      env:
+        DEVTO_API_KEY: ${{ inputs.devto-api-key }}
+        PYTHONPATH: ${{ github.action_path }}
+      run: |
+        python -m crosspost \
+          --before "${{ inputs.before }}" \
+          --after "${{ inputs.after }}" \
+          --post-dir "${{ inputs.post-dir }}" \
+          ${{ inputs.dry-run == 'true' && '--dry-run' || '' }}

@@ -1,0 +1,233 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Immutable semver tag to create, e.g. v1.0.0. Must match ^v\d+\.\d+\.\d+$ and must not already exist.'
+        required: true
+        type: string
+      breaking:
+        description: 'true = breaking (create new vMAJOR moving tag only if absent); false = non-breaking (force-update vMAJOR).'
+        required: true
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      release_notes:
+        description: 'Optional Release body. When empty, the workflow auto-populates from the commit log since the previous tag on the same major line.'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  validate-inputs:
+    runs-on: ubuntu-latest
+    outputs:
+      major: ${{ steps.parse.outputs.major }}
+      minor: ${{ steps.parse.outputs.minor }}
+      patch: ${{ steps.parse.outputs.patch }}
+      major_tag: ${{ steps.parse.outputs.major_tag }}
+    steps:
+      - name: Parse and validate version
+        id: parse
+        env:
+          VERSION: ${{ inputs.version }}
+          BREAKING: ${{ inputs.breaking }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$VERSION" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "error: version '$VERSION' does not match ^v\\d+\\.\\d+\\.\\d+$"
+            exit 1
+          fi
+          MAJOR="${BASH_REMATCH[1]}"
+          MINOR="${BASH_REMATCH[2]}"
+          PATCH="${BASH_REMATCH[3]}"
+          if [[ "$BREAKING" == "true" && ( "$MINOR" != "0" || "$PATCH" != "0" ) ]]; then
+            echo "error: breaking=true requires version of the form vN.0.0 (got minor=$MINOR, patch=$PATCH)"
+            exit 1
+          fi
+          echo "major=$MAJOR" >> "$GITHUB_OUTPUT"
+          echo "minor=$MINOR" >> "$GITHUB_OUTPUT"
+          echo "patch=$PATCH" >> "$GITHUB_OUTPUT"
+          echo "major_tag=v$MAJOR" >> "$GITHUB_OUTPUT"
+
+      - name: Reject if tag already exists on remote
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if gh api "repos/${GITHUB_REPOSITORY}/git/refs/tags/${VERSION}" >/dev/null 2>&1; then
+            echo "error: tag '$VERSION' already exists on the remote"
+            exit 1
+          fi
+
+  test:
+    needs: validate-inputs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install runtime dependencies (hash-locked)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --require-hashes -r crosspost/requirements.lock
+
+      - name: Install dev dependencies
+        run: python -m pip install pytest responses
+
+      - name: Run pytest
+        run: pytest
+
+  smoke:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install runtime dependencies (hash-locked)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --require-hashes -r crosspost/requirements.lock
+
+      - name: Run dry-run smoke test against real dev.to API
+        env:
+          DEVTO_API_KEY: ${{ secrets.DEVTO_API_KEY_SMOKE }}
+        run: |
+          set -euo pipefail
+
+          SMOKE_DIR="$(mktemp -d)"
+          cd "$SMOKE_DIR"
+          git init -q -b main
+          git config user.email "smoke@example.invalid"
+          git config user.name "smoke"
+          mkdir -p content/post
+          cat > content/post/smoke.md <<'POST'
+          ---
+          title: "Hugo → dev.to smoke test ${{ inputs.version }}"
+          date: 2026-04-18
+          draft: false
+          ---
+
+          This post exists only inside the release-gate smoke test. It is never published
+          because the action is invoked with --dry-run.
+          POST
+          git add content/post/smoke.md
+          git commit -q -m "smoke: add synthetic post"
+
+          export PYTHONPATH="${GITHUB_WORKSPACE}"
+          OUT_FILE="$(mktemp)"
+          python -m crosspost \
+            --before 4b825dc642cb6eb9a060e54bf8d69288fbee4904 \
+            --after HEAD \
+            --post-dir content/post \
+            --dry-run \
+            2>&1 | tee "$OUT_FILE"
+
+          if ! grep -qiE '^- would create draft:' "$OUT_FILE"; then
+            echo "error: smoke test produced no 'would create draft:' line"
+            exit 1
+          fi
+          if grep -qE '^(error:|global_failure)' "$OUT_FILE"; then
+            echo "error: smoke test emitted an error or global_failure line"
+            exit 1
+          fi
+
+  tag-and-release:
+    needs: [validate-inputs, smoke]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release commit SHA
+        id: sha
+        run: echo "release_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Create immutable semver tag
+        env:
+          VERSION: ${{ inputs.version }}
+          RELEASE_SHA: ${{ steps.sha.outputs.release_sha }}
+        run: |
+          set -euo pipefail
+          git tag -a "$VERSION" -m "Release $VERSION" "$RELEASE_SHA"
+          git push origin "$VERSION"
+
+      - name: Update moving major tag
+        env:
+          BREAKING: ${{ inputs.breaking }}
+          MAJOR_TAG: ${{ needs.validate-inputs.outputs.major_tag }}
+          RELEASE_SHA: ${{ steps.sha.outputs.release_sha }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ "$BREAKING" == "false" ]]; then
+            git tag -f "$MAJOR_TAG" "$RELEASE_SHA"
+            git push -f origin "$MAJOR_TAG"
+          else
+            if gh api "repos/${GITHUB_REPOSITORY}/git/refs/tags/${MAJOR_TAG}" >/dev/null 2>&1; then
+              echo "major tag $MAJOR_TAG already exists and breaking=true; leaving it alone"
+            else
+              git tag -a "$MAJOR_TAG" -m "Moving major tag $MAJOR_TAG" "$RELEASE_SHA"
+              git push origin "$MAJOR_TAG"
+            fi
+          fi
+
+      - name: Compose release notes
+        id: notes
+        env:
+          NOTES_INPUT: ${{ inputs.release_notes }}
+          MAJOR_TAG: ${{ needs.validate-inputs.outputs.major_tag }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$NOTES_INPUT" ]]; then
+            printf '%s' "$NOTES_INPUT" > release_notes.md
+          else
+            PREV="$(git tag --list "${MAJOR_TAG}.*" --sort=-v:refname | grep -vx "$VERSION" | head -n 1 || true)"
+            {
+              echo "## Changes"
+              echo
+              if [[ -n "$PREV" ]]; then
+                git log --pretty=format:'- %s' "${PREV}..${VERSION}"
+              else
+                git log --pretty=format:'- %s' "$VERSION"
+              fi
+            } > release_notes.md
+          fi
+          echo "notes_file=$PWD/release_notes.md" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+          RELEASE_SHA: ${{ steps.sha.outputs.release_sha }}
+          NOTES_FILE: ${{ steps.notes.outputs.notes_file }}
+        run: |
+          set -euo pipefail
+          gh release create "$VERSION" \
+            --target "$RELEASE_SHA" \
+            --title "$VERSION" \
+            --notes-file "$NOTES_FILE"

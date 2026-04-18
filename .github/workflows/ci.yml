@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install runtime dependencies (hash-locked)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --require-hashes -r crosspost/requirements.lock
+
+      - name: Install dev dependencies
+        run: python -m pip install pytest responses
+
+      - name: Run pytest
+        run: pytest

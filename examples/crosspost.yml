@@ -1,0 +1,21 @@
+name: Crosspost to dev.to
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  crosspost:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: basteez/hugo-to-devto-action@v1
+        with:
+          devto-api-key: ${{ secrets.DEVTO_API_KEY }}
+          before: ${{ github.event.before }}
+          after: ${{ github.event.after }}
