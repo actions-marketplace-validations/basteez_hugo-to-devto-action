@@ -1,6 +1,6 @@
 # Hugo → dev.to Crosspost Action
 
-> **Distribution**: Available via repository reference `basteez/hugo-to-devto-action`. Marketplace publication pending.
+> **Distribution**: Available via repository reference `basteez/hugo-to-devto-action`. [Available on Marketplace](https://github.com/marketplace/actions/hugo-to-dev-to-crosspost).
 
 A composite GitHub Action that mirrors new Hugo blog posts to [dev.to](https://dev.to) as drafts. On each push, it inspects the push range with `git diff`, parses Hugo frontmatter for posts under your configured post directory, and creates dev.to drafts for posts that have `draft: false` and do not already exist on dev.to (deduplicated by title). Intended for Hugo-based blogs that want a low-friction, one-way mirror of new content to dev.to.
 
