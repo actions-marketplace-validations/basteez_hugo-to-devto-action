@@ -8,21 +8,21 @@ branding:
 inputs:
   devto-api-key:
     description: >-
-      dev.to Personal API Key. Provide via a repository secret, e.g.
-      `${{ secrets.DEVTO_API_KEY }}`. The action fails with a non-zero exit
+      dev.to Personal API Key. Provide via a repository secret (e.g.
+      secrets.DEVTO_API_KEY). The action fails with a non-zero exit
       status when this input is empty or missing.
     required: true
 
   before:
     description: >-
-      "Before" SHA of the push range. Typically `${{ github.event.before }}`.
+      "Before" SHA of the push range. Typically github.event.before.
       Must be reachable in the checked-out repository (use
-      `actions/checkout@v4` with `fetch-depth: 0`).
+      actions/checkout@v4 with fetch-depth: 0).
     required: true
 
   after:
     description: >-
-      "After" SHA of the push range. Typically `${{ github.event.after }}`.
+      "After" SHA of the push range. Typically github.event.after.
     required: true
 
   post-dir:
